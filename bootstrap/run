@@ -1,0 +1,31 @@
+#!/bin/bash
+# s6 one-shot: once Forgejo answers, make sure the administrator exists with the password from FORGEJO_ADMIN_PASSWORD.
+# Registration is closed and the install wizard is locked, so there is no moment at which the forge accepts a
+# sign-up or a setup request before this has run. A failure stops the whole container so the restart policy retries.
+U="$FORGEJO_ADMIN_USER"
+P="$FORGEJO_ADMIN_PASSWORD"
+E_MAIL="${FORGEJO_ADMIN_EMAIL:-forgejo-admin@example.com}"
+BASE="http://127.0.0.1:${HTTP_PORT:-3000}"
+
+die() { echo "bootstrap: $*" >&2; s6-svscanctl -t /etc/s6; exec sleep infinity; }
+status() { curl -s -o /dev/null -w '%{http_code}' -u "$U:$P" "$BASE/api/v1/user"; }
+cli() { cd /app/gitea && su-exec "$USER" /usr/local/bin/forgejo --config "$GITEA_CUSTOM/conf/app.ini" "$@"; }
+
+i=0
+until [ "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/healthz")" = 200 ]; do
+  i=$((i + 1)); [ "$i" -le 150 ] || die "Forgejo did not answer on $BASE after 300s"
+  sleep 2
+done
+
+if [ "$(status)" != 200 ]; then
+  if cli admin user create --admin --username "$U" --email "$E_MAIL" --password "$P" --must-change-password=false >/dev/null 2>&1; then
+    echo "bootstrap: administrator $U created"
+  elif cli admin user change-password --username "$U" --password "$P" --must-change-password=false >/dev/null 2>&1; then
+    echo "bootstrap: administrator $U password reset to FORGEJO_ADMIN_PASSWORD"
+  else
+    die "could not create or update administrator $U"
+  fi
+fi
+[ "$(status)" = 200 ] || die "administrator $U cannot authenticate against the API"
+echo "bootstrap: administrator $U present"
+exec sleep infinity
